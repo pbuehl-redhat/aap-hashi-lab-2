@@ -21,13 +21,6 @@ terraform {
   }
 }
 
-# Data source to retrieve AWS credentials from Vault
-#
-# data "vault_generic_secret" "aws_creds" {
-#   path = "secret/data/aws_creds"
-#   namespace = "admin"
-# }
-
 # Provider configuration for AWS (credentials from Vault)
 provider "aws" {
   region     = var.aws_region
@@ -35,17 +28,12 @@ provider "aws" {
   # Use secrets defined in Terraform Enterprise
   access_key = var.aws_access_key
   secret_key = var.aws_secret_key
-  
-  # Alternative: Use Vault to get the AWS credentials
-  # access_key = data.vault_generic_secret.aws_creds.data.access_key
-  # secret_key = data.vault_generic_secret.aws_creds.data.secret_key
 }
 
 # Provider configuration for Vault using AppRole authentication
 provider "vault" {
   address           = var.vault_addr
 
-# Alternative: Use AppRole authentication (commented out for now)
   auth_login {
     path = "auth/approle/login"
     
@@ -57,23 +45,11 @@ provider "vault" {
   }
 }
 
-# Data source to retrieve AAP credentials from Vault
-#
-# data "vault_generic_secret" "aap_creds" {
-#   path = "secret/data/aap_creds"
-#   namespace = "admin"
-# }
-
 # Provider configuration for Ansible Automation Platform
 provider "aap" {
   host     = var.aap_host
-  # Use secrets defined in Terraform Enterprise
   username = var.aap_username
   password = var.aap_password
-  
-  # Alternative: Use Vault to get the AAP credentials
-  # username = data.vault_generic_secret.aap_creds.data.username
-  # password = data.vault_generic_secret.aap_creds.data.password
 }
 
 # Generate TLS private key for SSH
@@ -162,22 +138,20 @@ resource "aws_internet_gateway" "main" {
 }
 
 # Create public subnet
+# Note: availability_zone derived from aws_region variable (e.g. us-east-2 -> us-east-2a)
+# This avoids calling ec2:DescribeAvailabilityZones which is restricted by SCP
+# in RHDP sandbox environments.
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.main.id
   cidr_block              = var.subnet_cidr
   map_public_ip_on_launch = true
-  availability_zone       = data.aws_availability_zones.available.names[0]
+  availability_zone       = "${var.aws_region}a"
   
   tags = {
     Name        = "${var.project_name}-public-subnet"
     Environment = var.environment
     ManagedBy   = "Terraform"
   }
-}
-
-# Get available AZs
-data "aws_availability_zones" "available" {
-  state = "available"
 }
 
 # Create route table
@@ -289,9 +263,7 @@ resource "aws_instance" "rhel_server" {
   }
 }
 
-# ############### Trigger and AAP Workflow below ################# 
 # Launch existing AAP workflow job template after instances are ready
-#
 data "aap_inventory" "inventory" {
   name              = "Terraform Inventory"
   organization_name = "Default"
@@ -307,8 +279,6 @@ resource "aap_workflow_job" "workflow_job" {
   workflow_job_template_id = data.aap_workflow_job_template.workflow_job_template.id
   inventory_id             = data.aap_inventory.inventory.id
 
-# Force creation of this resource to wait for the rhel_server resource to be created
-# Wait for instances to be ready and SSH key stored
   depends_on = [
     aws_instance.rhel_server,
     vault_generic_secret.ssh_private_key
